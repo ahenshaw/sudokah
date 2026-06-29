@@ -1,0 +1,50 @@
+[package]
+name = "sudokah"
+version = "0.1.0"
+edition = "2024"
+
+# The app logic lives in a library so both the desktop binary and the Android
+# `cdylib` can share it. `rlib` is for the desktop bin; `cdylib` is what
+# cargo-apk packages into the APK.
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "sudokah"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.150"
+
+# eframe is declared per-target so feature sets don't unify across platforms:
+# the desktop build keeps eframe's defaults (incl. `accesskit`), while Android
+# must omit `accesskit` (it's incompatible with `android-native-activity`).
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { version = "0.35.0", features = ["persistence"] }
+
+# Android-only: omit defaults, re-enable just the renderer + fonts, and add the
+# native-activity glue, a logger (Android has no stdout), and winit so we can
+# name the `AndroidApp` type in `android_main`.
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.35.0", default-features = false, features = [
+    "default_fonts",
+    "wgpu",
+    "persistence",
+    "android-native-activity",
+] }
+winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
+android_logger = "0.14"
+log = "0.4"
+
+# Default Android manifest config for cargo-apk. Adjust as needed.
+[package.metadata.android]
+package = "com.example.sudokah"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 23
+target_sdk_version = 35
+
+[package.metadata.android.application]
+label = "Sudokah"
