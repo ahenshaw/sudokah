@@ -966,15 +966,106 @@ impl SudokahApp {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         ui.add_space(4.0);
-        // Mode selector (2x2) sits beside the digit/color pad. Sizing everything
-        // as a 7-column grid of equal squares (2 mode columns + 5 digit columns,
-        // 2 rows tall) keeps the two blocks the same height and the buttons big
-        // enough to tap comfortably.
         let counts = self.digit_counts();
         let done_fill = Color32::from_rgb(120, 190, 130); // a digit fully placed (all 9 on board)
         let spacing = ui.spacing().item_spacing.x;
-        let s = ((ui.available_width() - spacing * 6.0) / 7.0).max(1.0);
+
+        // Digit / color pad on a single row: 1-9 plus delete (10 = delete).
+        // The cells are taller than wide so the numerals can be drawn large even
+        // though ten of them have to share the width.
+        let ds = ((ui.available_width() - spacing * 9.0) / 10.0).max(1.0);
+        let dh = ds * 1.6;
+        let dsz = vec2(ds, dh);
+        ui.horizontal(|ui| {
+            for d in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10u8] {
+                if d == 10 {
+                    if ui
+                        .add_sized(
+                            dsz,
+                            egui::Button::new(egui::RichText::new("🗑").size(dh * 0.45)).frame(false),
+                        )
+                        .on_hover_text("Delete (Backspace)")
+                        .clicked()
+                    {
+                        self.clear_selected();
+                    }
+                } else if self.mode == Mode::Color {
+                    let (rect, resp) = ui.allocate_exact_size(dsz, Sense::click());
+                    ui.painter()
+                        .rect_filled(rect, CornerRadius::same(4), COLORS[(d - 1) as usize]);
+                    if resp.clicked() {
+                        self.apply_digit(d);
+                    }
+                } else {
+                    // Plain digits read as numbers, not buttons; tinted to match the
+                    // active mode. A fully-placed digit gets a filled chip (with dark
+                    // text for contrast).
+                    let done = counts[(d - 1) as usize] == 9;
+                    let mut text = egui::RichText::new(format!("{d}")).size(dh * 0.62);
+                    if !done {
+                        text = text.color(self.mode.ink());
+                    }
+                    let mut btn = egui::Button::new(text).frame(done);
+                    if done {
+                        btn = btn.fill(done_fill);
+                    }
+                    if ui.add_sized(dsz, btn).clicked() {
+                        self.apply_digit(d);
+                    }
+                }
+            }
+        });
+
+        ui.add_space(4.0);
+        // Mode buttons (2x2) share a row with the cursor D-pad. Both blocks are
+        // two squares tall so they line up; sized to fill the width as 5 columns
+        // (2 mode + 3 D-pad). The arrows are painted as triangles rather than text
+        // glyphs because the bundled Android font has no arrow characters (they'd
+        // render as empty "tofu" boxes).
+        let s = ((ui.available_width() - spacing * 4.0) / 5.0).max(1.0);
         let sz = vec2(s, s);
+        let mut nudge: Option<(i32, i32)> = None;
+        // `tri` is U/D/L/R; draws a button-styled square with a triangle and
+        // reports a click.
+        let arrow = |ui: &mut egui::Ui, tri: char| -> bool {
+            let (rect, resp) = ui.allocate_exact_size(sz, Sense::click());
+            // Soft, recessive look: no frame at rest, a faint highlight only while
+            // the key is touched, and a small muted triangle.
+            if resp.hovered() || resp.is_pointer_button_down_on() {
+                let fill = ui.style().interact(&resp).weak_bg_fill;
+                ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+            }
+            let c = rect.center();
+            let r = s * 0.17;
+            let col = ui.visuals().weak_text_color();
+            let pts = match tri {
+                'U' => vec![pos2(c.x, c.y - r), pos2(c.x - r, c.y + r), pos2(c.x + r, c.y + r)],
+                'D' => vec![pos2(c.x, c.y + r), pos2(c.x - r, c.y - r), pos2(c.x + r, c.y - r)],
+                'L' => vec![pos2(c.x - r, c.y), pos2(c.x + r, c.y - r), pos2(c.x + r, c.y + r)],
+                _ => vec![pos2(c.x + r, c.y), pos2(c.x - r, c.y - r), pos2(c.x - r, c.y + r)],
+            };
+            ui.painter()
+                .add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
+            resp.clicked()
+        };
+        // Same soft style as the arrows, but with a text label (Undo / Redo).
+        let soft_btn = |ui: &mut egui::Ui, label: &str| -> bool {
+            let (rect, resp) = ui.allocate_exact_size(sz, Sense::click());
+            if resp.hovered() || resp.is_pointer_button_down_on() {
+                let fill = ui.style().interact(&resp).weak_bg_fill;
+                ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+            }
+            // Match the mode buttons' label color (the inactive-widget text color).
+            let col = ui.visuals().widgets.inactive.fg_stroke.color;
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(s * 0.22),
+                col,
+            );
+            resp.clicked()
+        };
         ui.horizontal(|ui| {
             // 2x2 mode buttons.
             ui.vertical(|ui| {
@@ -998,75 +1089,68 @@ impl SudokahApp {
                     });
                 }
             });
-
-            // Digit / color pad: 5 columns x 2 rows (1-9, with 10 = delete).
+            // D-pad: ↑ on top, ← ↓ → on the bottom row.
             ui.vertical(|ui| {
-                for row in [[1, 2, 3, 4, 5u8], [6, 7, 8, 9, 10]] {
-                    ui.horizontal(|ui| {
-                        for d in row {
-                            if d == 10 {
-                                if ui
-                                    .add_sized(
-                                        sz,
-                                        egui::Button::new(egui::RichText::new("🗑").size(s * 0.4))
-                                            .frame(false),
-                                    )
-                                    .on_hover_text("Delete (Backspace)")
-                                    .clicked()
-                                {
-                                    self.clear_selected();
-                                }
-                            } else if self.mode == Mode::Color {
-                                let (rect, resp) = ui.allocate_exact_size(sz, Sense::click());
-                                ui.painter().rect_filled(
-                                    rect,
-                                    CornerRadius::same(4),
-                                    COLORS[(d - 1) as usize],
-                                );
-                                if resp.clicked() {
-                                    self.apply_digit(d);
-                                }
-                            } else {
-                                // Plain digits read as numbers, not buttons; tinted
-                                // to match the active mode. A fully-placed digit
-                                // gets a filled chip (with dark text for contrast).
-                                let done = counts[(d - 1) as usize] == 9;
-                                let mut text = egui::RichText::new(format!("{d}")).size(s * 0.5);
-                                if !done {
-                                    text = text.color(self.mode.ink());
-                                }
-                                let mut btn = egui::Button::new(text).frame(done);
-                                if done {
-                                    btn = btn.fill(done_fill);
-                                }
-                                if ui.add_sized(sz, btn).clicked() {
-                                    self.apply_digit(d);
-                                }
-                            }
-                        }
-                    });
-                }
+                ui.horizontal(|ui| {
+                    // Undo / Redo fill the otherwise-empty top corners.
+                    if soft_btn(ui, "Undo") {
+                        self.undo();
+                    }
+                    if arrow(ui, 'U') {
+                        nudge = Some((-1, 0));
+                    }
+                    if soft_btn(ui, "Redo") {
+                        self.redo();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if arrow(ui, 'L') {
+                        nudge = Some((0, -1));
+                    }
+                    if arrow(ui, 'D') {
+                        nudge = Some((1, 0));
+                    }
+                    if arrow(ui, 'R') {
+                        nudge = Some((0, 1));
+                    }
+                });
             });
         });
+        if let Some((dr, dc)) = nudge {
+            self.move_cursor(dr, dc, false);
+        }
 
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("⟲ Undo").clicked() {
-                self.undo();
-            }
-            if ui.button("⟳ Redo").clicked() {
-                self.redo();
-            }
-            ui.separator();
-            if ui
-                .add(egui::Button::selectable(
-                    self.show_auto_candidates,
-                    "Auto candidates",
-                ))
-                .on_hover_text("Overlay legal candidates without touching your own marks")
-                .clicked()
-            {
-                self.show_auto_candidates = !self.show_auto_candidates;
+        // One blank row (a button-row tall) separating the cursor block from the
+        // buttons below.
+        let row_h = ui.spacing().interact_size.y;
+        ui.add_space(row_h);
+        // egui can't center a sequence of widgets on its own (immediate mode
+        // places them left-to-right before the row width is known), so measure
+        // each row's content and pad the left edge to center it.
+        let item = ui.spacing().item_spacing.x;
+        let btn_pad = 2.0 * ui.spacing().button_padding.x;
+        let icon_w = ui.spacing().icon_width;
+        let icon_gap = ui.spacing().icon_spacing;
+        let body_font = egui::TextStyle::Button.resolve(ui.style());
+        let big_font = egui::FontId::proportional(22.0);
+        let avail = ui.available_width();
+        let text_w = |ui: &egui::Ui, t: &str, f: &egui::FontId| -> f32 {
+            ui.painter()
+                .layout_no_wrap(t.to_owned(), f.clone(), Color32::WHITE)
+                .size()
+                .x
+        };
+        let left_pad = |w: f32| ((avail - w) * 0.5).max(0.0);
+
+        // Action row.
+        let mut w = 6.0 + item * 4.0; // separator + gaps between the 5 items
+        for t in ["🏆 Best times", "Clear marks", "Solve", "New / Clear"] {
+            w += text_w(ui, t, &body_font) + btn_pad;
+        }
+        ui.horizontal(|ui| {
+            ui.add_space(left_pad(w));
+            if ui.button("🏆 Best times").clicked() {
+                self.show_best_times = true;
             }
             if ui.button("Clear marks").clicked() {
                 self.clear_pencil_marks();
@@ -1089,31 +1173,15 @@ impl SudokahApp {
         });
 
         ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label("New puzzle:");
-            for (label, diff) in [
-                ("Easy", "easy"),
-                ("Medium", "medium"),
-                ("Hard", "hard"),
-                ("Expert", "expert"),
-            ] {
-                if ui.button(label).clicked() {
-                    // Guard against accidentally discarding work, but only when
-                    // the user has actually changed the board since it loaded.
-                    if self.needs_confirm() {
-                        self.pending = Some(PendingAction::NewPuzzle(diff.to_owned()));
-                    } else {
-                        self.new_puzzle(diff);
-                    }
-                }
-            }
-            ui.separator();
-            if ui.button("Load...").clicked() {
-                self.show_load_dialog = true;
-            }
-            if ui.button("🏆 Best times").clicked() {
-                self.show_best_times = true;
-            }
+        // Flags row (checkboxes).
+        let mut w = item * 2.0; // gaps between the 3 checkboxes
+        for t in ["Clues", "Set givens", "Show errors"] {
+            w += icon_w + icon_gap + text_w(ui, t, &body_font);
+        }
+        ui.horizontal(|ui| {
+            ui.add_space(left_pad(w));
+            ui.checkbox(&mut self.show_auto_candidates, "Clues")
+                .on_hover_text("Overlay legal candidates without touching your own marks");
             ui.checkbox(&mut self.set_givens, "Set givens");
             if ui
                 .checkbox(&mut self.show_errors, "Show errors")
@@ -1125,7 +1193,44 @@ impl SudokahApp {
                 self.compute_solution();
             }
         });
+
         ui.add_space(4.0);
+        // New-puzzle difficulty buttons.
+        let mut w = item * 4.0; // gaps between the 5 buttons
+        for t in ["Easy", "Medium", "Hard", "Expert", "Load..."] {
+            w += text_w(ui, t, &big_font) + btn_pad;
+        }
+        ui.horizontal(|ui| {
+            ui.add_space(left_pad(w));
+            for (label, diff) in [
+                ("Easy", "easy"),
+                ("Medium", "medium"),
+                ("Hard", "hard"),
+                ("Expert", "expert"),
+            ] {
+                if ui
+                    .add(egui::Button::new(egui::RichText::new(label).size(22.0)))
+                    .clicked()
+                {
+                    // Guard against accidentally discarding work, but only when the
+                    // user has actually changed the board since it loaded.
+                    if self.needs_confirm() {
+                        self.pending = Some(PendingAction::NewPuzzle(diff.to_owned()));
+                    } else {
+                        self.new_puzzle(diff);
+                    }
+                }
+            }
+            if ui
+                .add(egui::Button::new(egui::RichText::new("Load...").size(22.0)))
+                .clicked()
+            {
+                self.show_load_dialog = true;
+            }
+        });
+
+        // Lift the whole stack up off the bottom edge.
+        ui.add_space(100.0);
 
         self.load_dialog(&ctx);
         self.best_times_dialog(&ctx);
@@ -1360,6 +1465,9 @@ impl SudokahApp {
         let cw = avail.x.max(200.0) / 9.0;
         let ch = cw.min((avail.y / 9.0).max(1.0));
         let cmin = cw.min(ch); // basis for font sizes
+        // Push the board to the bottom of its area so it sits directly above
+        // the controls; the leftover height collects as a margin up top.
+        ui.add_space((avail.y - ch * 9.0).max(0.0));
         let (rect, response) =
             ui.allocate_exact_size(vec2(cw * 9.0, ch * 9.0), Sense::click_and_drag());
         let painter = ui.painter_at(rect);
@@ -1443,7 +1551,7 @@ impl SudokahApp {
         let user_col = USER_COL;
         let center_col = CENTER_COL; // candidates (center marks): navy
         let corner_col = CORNER_COL; // corner marks: brown
-        let auto_col = Color32::from_rgb(120, 130, 170); // auto candidates overlay: muted blue-grey
+        let auto_col = Color32::from_rgb(80, 92, 140); // auto candidates overlay: muted blue-grey
         let error_col = Color32::from_rgb(220, 30, 30); // wrong digit (Show errors): red
         for r in 0..9 {
             for c in 0..9 {
@@ -1487,7 +1595,7 @@ impl SudokahApp {
                         .collect();
                     if !digits.is_empty() {
                         let n = digits.len();
-                        let fs = (cmin * 0.18).min(cmin * 1.4 / n as f32).max(cmin * 0.12);
+                        let fs = (cmin * 0.24).min(cmin * 1.7 / n as f32).max(cmin * 0.16);
                         painter.text(
                             cr.center(),
                             Align2::CENTER_CENTER,
@@ -1516,7 +1624,7 @@ impl SudokahApp {
                             p,
                             Align2::CENTER_CENTER,
                             char::from(b'1' + i as u8).to_string(),
-                            FontId::proportional(cmin * 0.12),
+                            FontId::proportional(cmin * 0.22),
                             corner_col,
                         );
                     }
