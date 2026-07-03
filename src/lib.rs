@@ -73,8 +73,17 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     // for the system-bar inset query in `raw_input_hook`, before `app` is moved.
     let _ = ANDROID_PTRS.set((app.vm_as_ptr() as usize, app.activity_as_ptr() as usize));
 
+    // eframe's `storage_dir()` returns `None` on Android, so persistence is off
+    // unless we hand it a writable path. Point it at the app's private internal
+    // data dir so saved puzzles/preferences survive restarts (as on desktop).
+    let persistence_path = app.internal_data_path().map(|p| p.join("app.ron"));
+    if persistence_path.is_none() {
+        log::warn!("no internal data path; persistence will be disabled");
+    }
+
     let options = eframe::NativeOptions {
         android_app: Some(app),
+        persistence_path,
         ..Default::default()
     };
     if let Err(e) = run(options) {
