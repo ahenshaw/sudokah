@@ -1256,6 +1256,21 @@ fn row_text_width(ui: &egui::Ui, text: &str, font: &egui::FontId) -> f32 {
         .x
 }
 
+/// Largest font size (<= `base`) at which the button `labels` fit on one row
+/// within `avail`, given `fixed` non-text pixels (button padding, gaps,
+/// separators). Only the text width scales with the font, so we solve for it
+/// directly. Keeps the difficulty/action rows from overflowing and clipping on
+/// narrow screens (portrait phones, and especially the narrow landscape panel).
+fn fit_font_size(ui: &egui::Ui, labels: &[&str], base: f32, fixed: f32, avail: f32) -> f32 {
+    let base_font = egui::FontId::proportional(base);
+    let text: f32 = labels.iter().map(|t| row_text_width(ui, t, &base_font)).sum();
+    if text <= 0.0 {
+        return base;
+    }
+    // Leave a couple of pixels of slack so rounding never re-triggers clipping.
+    (base * (avail - fixed - 4.0) / text).clamp(11.0, base)
+}
+
 impl SudokahApp {
     /// Keypad row: digits 1-9 plus the delete button.
     fn row_keypad(&mut self, ui: &mut egui::Ui) {
@@ -1442,29 +1457,36 @@ impl SudokahApp {
     fn row_actions(&mut self, ui: &mut egui::Ui) {
         let item = ui.spacing().item_spacing.x;
         let btn_pad = 2.0 * ui.spacing().button_padding.x;
-        let body_font = egui::TextStyle::Button.resolve(ui.style());
         let avail = ui.available_width();
-        let mut w = 6.0 + item * 4.0; // separator + gaps between the 5 items
-        for t in ["🏆 Best times", "Clear marks", "Solve", "New / Clear"] {
-            w += row_text_width(ui, t, &body_font) + btn_pad;
+        let labels = ["🏆 Best times", "Clear marks", "Solve", "New / Clear"];
+        // 4 buttons + a separator = 5 items -> 4 gaps, plus the separator's width.
+        let fixed = labels.len() as f32 * btn_pad + 4.0 * item + 6.0;
+        let size = fit_font_size(ui, &labels, egui::TextStyle::Button.resolve(ui.style()).size, fixed, avail);
+        let font = egui::FontId::proportional(size);
+        let mut w = 6.0 + item * 4.0;
+        for t in labels {
+            w += row_text_width(ui, t, &font) + btn_pad;
         }
+        let btn = |ui: &mut egui::Ui, label: &str| {
+            ui.add(egui::Button::new(egui::RichText::new(label).size(size)))
+        };
         ui.horizontal(|ui| {
             ui.add_space(row_left_pad(avail, w));
-            if ui.button("🏆 Best times").clicked() {
+            if btn(ui, "🏆 Best times").clicked() {
                 self.show_best_times = true;
             }
-            if ui.button("Clear marks").clicked() {
+            if btn(ui, "Clear marks").clicked() {
                 self.clear_pencil_marks();
             }
             ui.separator();
-            if ui.button("Solve").clicked() {
+            if btn(ui, "Solve").clicked() {
                 if self.needs_confirm() {
                     self.pending = Some(PendingAction::Solve);
                 } else {
                     self.solve();
                 }
             }
-            if ui.button("New / Clear").clicked() {
+            if btn(ui, "New / Clear").clicked() {
                 if self.needs_confirm() {
                     self.pending = Some(PendingAction::ClearAll);
                 } else {
@@ -1506,11 +1528,17 @@ impl SudokahApp {
     fn row_difficulty(&mut self, ui: &mut egui::Ui) {
         let item = ui.spacing().item_spacing.x;
         let btn_pad = 2.0 * ui.spacing().button_padding.x;
-        let big_font = egui::FontId::proportional(22.0);
         let avail = ui.available_width();
-        let mut w = item * 4.0; // gaps between the 5 buttons
-        for t in ["Easy", "Medium", "Hard", "Expert", "Load..."] {
-            w += row_text_width(ui, t, &big_font) + btn_pad;
+        let labels = ["Easy", "Medium", "Hard", "Expert", "Load..."];
+        // Scale the 22pt label down when the five buttons wouldn't fit the panel
+        // width (narrow portrait, or the narrow landscape side panel) — otherwise
+        // the row overflows and "Load..." gets clipped or pushed off entirely.
+        let fixed = labels.len() as f32 * btn_pad + (labels.len() as f32 - 1.0) * item;
+        let size = fit_font_size(ui, &labels, 22.0, fixed, avail);
+        let font = egui::FontId::proportional(size);
+        let mut w = (labels.len() as f32 - 1.0) * item;
+        for t in labels {
+            w += row_text_width(ui, t, &font) + btn_pad;
         }
         ui.horizontal(|ui| {
             ui.add_space(row_left_pad(avail, w));
@@ -1521,7 +1549,7 @@ impl SudokahApp {
                 ("Expert", "expert"),
             ] {
                 if ui
-                    .add(egui::Button::new(egui::RichText::new(label).size(22.0)))
+                    .add(egui::Button::new(egui::RichText::new(label).size(size)))
                     .clicked()
                 {
                     // Guard against accidentally discarding work, but only when the
@@ -1534,7 +1562,7 @@ impl SudokahApp {
                 }
             }
             if ui
-                .add(egui::Button::new(egui::RichText::new("Load...").size(22.0)))
+                .add(egui::Button::new(egui::RichText::new("Load...").size(size)))
                 .clicked()
             {
                 self.show_load_dialog = true;
