@@ -5,6 +5,7 @@
 #     rustup target add x86_64-pc-windows-msvc
 #     cargo install cargo-xwin           # needs LLVM: clang, lld-link, llvm-lib
 # Build (cargo-xwin fetches & caches the MS CRT/SDK on first run):
+#     cargo win                          # alias for the command below
 #     cargo xwin build --release --target x86_64-pc-windows-msvc
 #   -> target/x86_64-pc-windows-msvc/release/sudokah.exe
 #
@@ -21,3 +22,7 @@
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
 ar = "x86_64-w64-mingw32-ar"
+
+# `cargo win` -> the MSVC release cross-build above (needs cargo-xwin installed).
+[alias]
+win = "xwin build --release --target x86_64-pc-windows-msvc"
