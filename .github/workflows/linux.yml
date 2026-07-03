@@ -1,0 +1,50 @@
+name: Linux build
+
+# Builds the release binary on ubuntu-latest and uploads it as an artifact; on a
+# `v*` tag it's also attached to the matching GitHub Release.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed for the release upload on tag builds
+    steps:
+      - uses: actions/checkout@v4
+
+      # System libraries egui/eframe link against on Linux (clipboard + xkb).
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libwayland-dev
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release --bin sudokah
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: sudokah-linux-x86_64
+          path: target/release/sudokah
+          if-no-files-found: error
+
+      - name: Attach binary to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/sudokah
+          fail_on_unmatched_files: true
