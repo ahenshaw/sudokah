@@ -16,6 +16,9 @@ const BEST_TIMES_KEY: &str = "sudokah_best_times";
 /// Storage key for the "Show errors" toggle, persisted independently of any
 /// in-progress puzzle so the preference survives an empty or solved board.
 const SHOW_ERRORS_KEY: &str = "sudokah_show_errors";
+/// Storage key for the "Clues" toggle, persisted independently of any puzzle
+/// like [`SHOW_ERRORS_KEY`].
+const CLUES_KEY: &str = "sudokah_clues";
 
 /// `MM:SS`, or `H:MM:SS` once the solve passes an hour.
 fn format_duration(d: Duration) -> String {
@@ -276,7 +279,7 @@ impl Default for SudokahApp {
             baseline: [[Cell::default(); 9]; 9],
             selection: Vec::new(),
             mode: Mode::Normal,
-            set_givens: true,
+            set_givens: false,
             show_auto_candidates: false,
             show_errors: false,
             solution: None,
@@ -314,6 +317,9 @@ impl SudokahApp {
         if let Some(storage) = cc.storage {
             app.show_errors = storage
                 .get_string(SHOW_ERRORS_KEY)
+                .is_some_and(|s| s == "true");
+            app.show_auto_candidates = storage
+                .get_string(CLUES_KEY)
                 .is_some_and(|s| s == "true");
             if let Some(json) = storage.get_string(STATE_KEY) {
                 if let Ok(state) = serde_json::from_str::<SaveState>(&json) {
@@ -1111,6 +1117,7 @@ impl eframe::App for SudokahApp {
             storage.set_string(BEST_TIMES_KEY, json);
         }
         storage.set_string(SHOW_ERRORS_KEY, self.show_errors.to_string());
+        storage.set_string(CLUES_KEY, self.show_auto_candidates.to_string());
         if self.is_completed() || self.is_empty() {
             storage.set_string(STATE_KEY, String::new());
             return;
@@ -1463,14 +1470,13 @@ impl SudokahApp {
         let sw = track_w + 6.0; // track + gap before the label
         let avail = ui.available_width();
         let mut w = item * 2.0; // gaps between the 3 toggles
-        for t in ["Clues", "Set givens", "Show errors"] {
+        for t in ["Clues", "Show errors", "Set givens"] {
             w += sw + row_text_width(ui, t, &body_font);
         }
         ui.horizontal(|ui| {
             ui.add_space(row_left_pad(avail, w));
             toggle_switch(ui, &mut self.show_auto_candidates, "Clues")
                 .on_hover_text("Overlay legal candidates without touching your own marks");
-            toggle_switch(ui, &mut self.set_givens, "Set givens");
             if toggle_switch(ui, &mut self.show_errors, "Show errors")
                 .on_hover_text("Highlight digits that don't match the solution in red")
                 .changed()
@@ -1479,6 +1485,7 @@ impl SudokahApp {
             {
                 self.compute_solution();
             }
+            toggle_switch(ui, &mut self.set_givens, "Set givens");
         });
     }
 
