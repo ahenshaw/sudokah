@@ -608,12 +608,17 @@ impl SudokahApp {
 
     /// Reflect the solve clock in the window title, e.g. "Sudokah — 02:35".
     fn update_title(&mut self, ctx: &egui::Context) {
+        // Include the difficulty when it's known (a generated puzzle).
+        let base = match self.difficulty.as_deref() {
+            Some(d) => format!("Sudokah — {}", titlecase(d)),
+            None => "Sudokah".to_owned(),
+        };
         let title = if self.solved {
-            format!("Sudokah — Solved {}", format_duration(self.timer_elapsed))
+            format!("{base} — Solved {}", format_duration(self.timer_elapsed))
         } else if self.timer_start.is_some() {
-            format!("Sudokah — {}", format_duration(self.elapsed()))
+            format!("{base} — {}", format_duration(self.elapsed()))
         } else {
-            "Sudokah".to_owned()
+            base
         };
         if title != self.last_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -1248,6 +1253,15 @@ fn row_left_pad(avail: f32, w: f32) -> f32 {
     ((avail - w) * 0.5).max(0.0)
 }
 
+/// Capitalize the first character (e.g. difficulty `"medium"` -> `"Medium"`).
+fn titlecase(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 /// Width of `text` laid out in `font`, used to measure a row so it can be centered.
 fn row_text_width(ui: &egui::Ui, text: &str, font: &egui::FontId) -> f32 {
     ui.painter()
@@ -1548,10 +1562,18 @@ impl SudokahApp {
                 ("Hard", "hard"),
                 ("Expert", "expert"),
             ] {
-                if ui
-                    .add(egui::Button::new(egui::RichText::new(label).size(size)))
-                    .clicked()
-                {
+                // Highlight the button matching the current puzzle's difficulty
+                // (when known) with the accent, so it's clear what you're playing.
+                let current = self.difficulty.as_deref() == Some(diff);
+                let mut text = egui::RichText::new(label).size(size);
+                if current {
+                    text = text.color(Color32::WHITE);
+                }
+                let mut btn = egui::Button::new(text);
+                if current {
+                    btn = btn.fill(ACCENT);
+                }
+                if ui.add(btn).clicked() {
                     // Guard against accidentally discarding work, but only when the
                     // user has actually changed the board since it loaded.
                     if self.needs_confirm() {
