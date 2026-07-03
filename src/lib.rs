@@ -307,8 +307,9 @@ impl Default for SudokahApp {
 impl SudokahApp {
     /// Build the app, restoring an in-progress puzzle from storage if present.
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Default to light mode regardless of the system theme.
-        cc.egui_ctx.set_visuals(egui::Visuals::light());
+        // Light mode regardless of the system theme, plus the flat/rounded
+        // widget restyle.
+        configure_style(&cc.egui_ctx);
         let mut app = SudokahApp::default();
         if let Some(storage) = cc.storage {
             app.show_errors = storage
@@ -1128,6 +1129,98 @@ impl eframe::App for SudokahApp {
     }
 }
 
+/// The single accent color used for active/selected states across the UI.
+const ACCENT: Color32 = Color32::from_rgb(59, 130, 246);
+/// Default label/text color for the controls (a soft near-black).
+const INK: Color32 = Color32::from_rgb(55, 58, 64);
+
+/// Give the default widgets (buttons, difficulty chips, dialog buttons) a
+/// flatter, rounded, single-accent look in place of egui's gray bevels: soft
+/// neutral chips at rest, a touch deeper on hover, and the accent when pressed.
+fn configure_style(ctx: &egui::Context) {
+    let mut style = egui::Style {
+        visuals: egui::Visuals::light(),
+        ..Default::default()
+    };
+    let radius = CornerRadius::same(9);
+    let rest = Color32::from_rgb(238, 240, 246);
+    let hover = Color32::from_rgb(226, 230, 241);
+    let w = &mut style.visuals.widgets;
+
+    w.inactive.corner_radius = radius;
+    w.inactive.bg_stroke = Stroke::NONE;
+    w.inactive.weak_bg_fill = rest;
+    w.inactive.bg_fill = rest;
+    w.inactive.fg_stroke = Stroke::new(1.0, INK);
+    w.inactive.expansion = 0.0;
+
+    w.hovered.corner_radius = radius;
+    w.hovered.bg_stroke = Stroke::NONE;
+    w.hovered.weak_bg_fill = hover;
+    w.hovered.bg_fill = hover;
+    w.hovered.fg_stroke = Stroke::new(1.0, INK);
+    w.hovered.expansion = 0.0;
+
+    w.active.corner_radius = radius;
+    w.active.bg_stroke = Stroke::NONE;
+    w.active.weak_bg_fill = ACCENT;
+    w.active.bg_fill = ACCENT;
+    w.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    w.active.expansion = 0.0;
+
+    w.open.corner_radius = radius;
+
+    style.visuals.selection.bg_fill = ACCENT;
+    style.visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
+    style.spacing.button_padding = vec2(10.0, 6.0);
+
+    ctx.set_global_style(style);
+}
+
+/// A modern pill on/off toggle with a trailing label; the whole thing is
+/// clickable. Returns the response (its `.changed()` is true on the flip frame),
+/// so callers keep `.on_hover_text()` / `.changed()` as with `ui.checkbox`.
+fn toggle_switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font.clone(), INK);
+    let h = (font.size * 1.15).max(18.0);
+    let track_w = h * 1.7;
+    let gap = 6.0;
+    let desired = vec2(track_w + gap + galley.size().x, h.max(galley.size().y));
+    let (rect, mut resp) = ui.allocate_exact_size(desired, Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    // Ease the knob/track between states; `animate_bool` self-drives the repaints.
+    let t = ui.ctx().animate_bool(resp.id, *on);
+    let track = Rect::from_min_size(
+        pos2(rect.left(), rect.center().y - h * 0.5),
+        vec2(track_w, h),
+    );
+    let off = Color32::from_gray(201);
+    let track_col =
+        Color32::from(egui::Rgba::from(off) * (1.0 - t) + egui::Rgba::from(ACCENT) * t);
+    ui.painter()
+        .rect_filled(track, CornerRadius::same((h * 0.5) as u8), track_col);
+    let knob_r = h * 0.5 - 2.5;
+    let kx = egui::lerp((track.left() + knob_r + 2.5)..=(track.right() - knob_r - 2.5), t);
+    ui.painter().circle(
+        pos2(kx, track.center().y),
+        knob_r,
+        Color32::WHITE,
+        Stroke::new(1.0, Color32::from_gray(170)),
+    );
+    ui.painter().galley(
+        pos2(track.right() + gap, rect.center().y - galley.size().y * 0.5),
+        galley,
+        INK,
+    );
+    resp
+}
+
 /// Left padding to horizontally center a row whose content is `w` wide within
 /// `avail`. egui places widgets left-to-right before the row width is known, so
 /// centered rows are padded manually.
@@ -1161,7 +1254,10 @@ impl SudokahApp {
                     if ui
                         .add_sized(
                             dsz,
-                            egui::Button::new(egui::RichText::new("🗑").size(ds * 0.5)).frame(false),
+                            egui::Button::new(
+                                egui::RichText::new("🗑").size(ds * 0.5).color(self.mode.ink()),
+                            )
+                            .frame(false),
                         )
                         .on_hover_text("Delete (Backspace)")
                         .clicked()
@@ -1269,9 +1365,16 @@ impl SudokahApp {
                 ] {
                     ui.horizontal(|ui| {
                         for (label, key, mode) in row {
-                            let txt = egui::RichText::new(label).size(s * 0.22);
-                            let btn = egui::Button::selectable(self.mode == mode, txt)
-                                .stroke(Stroke::new(1.0, Color32::from_gray(140)));
+                            // Segmented-control look: every mode is a soft chip,
+                            // the active one filled with the accent.
+                            let selected = self.mode == mode;
+                            let txt = egui::RichText::new(label).size(s * 0.22).color(
+                                if selected { Color32::WHITE } else { INK },
+                            );
+                            let mut btn = egui::Button::new(txt);
+                            if selected {
+                                btn = btn.fill(ACCENT);
+                            }
                             if ui
                                 .add_sized(sz, btn)
                                 .on_hover_text(format!("Shortcut: {key}"))
@@ -1351,24 +1454,24 @@ impl SudokahApp {
         });
     }
 
-    /// Flags row: the three checkboxes.
+    /// Flags row: the three toggle switches.
     fn row_flags(&mut self, ui: &mut egui::Ui) {
         let item = ui.spacing().item_spacing.x;
-        let icon_w = ui.spacing().icon_width;
-        let icon_gap = ui.spacing().icon_spacing;
         let body_font = egui::TextStyle::Button.resolve(ui.style());
+        // Match the toggle_switch geometry so the row centers correctly.
+        let track_w = (body_font.size * 1.15).max(18.0) * 1.7;
+        let sw = track_w + 6.0; // track + gap before the label
         let avail = ui.available_width();
-        let mut w = item * 2.0; // gaps between the 3 checkboxes
+        let mut w = item * 2.0; // gaps between the 3 toggles
         for t in ["Clues", "Set givens", "Show errors"] {
-            w += icon_w + icon_gap + row_text_width(ui, t, &body_font);
+            w += sw + row_text_width(ui, t, &body_font);
         }
         ui.horizontal(|ui| {
             ui.add_space(row_left_pad(avail, w));
-            ui.checkbox(&mut self.show_auto_candidates, "Clues")
+            toggle_switch(ui, &mut self.show_auto_candidates, "Clues")
                 .on_hover_text("Overlay legal candidates without touching your own marks");
-            ui.checkbox(&mut self.set_givens, "Set givens");
-            if ui
-                .checkbox(&mut self.show_errors, "Show errors")
+            toggle_switch(ui, &mut self.set_givens, "Set givens");
+            if toggle_switch(ui, &mut self.show_errors, "Show errors")
                 .on_hover_text("Highlight digits that don't match the solution in red")
                 .changed()
                 && self.show_errors
