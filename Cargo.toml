@@ -54,3 +54,10 @@ target_sdk_version = 35
 
 [package.metadata.android.application]
 label = "Sudokah"
+
+[profile.release]
+opt-level = "z"     # Optimize for size; "z" scales down aggressively over "s"
+strip = true        # Automatically removes all debug symbols and tables
+lto = true          # Enables Link-Time Optimization across all dependency crates
+codegen-units = 1   # Reduces parallel code generation to optimize aggressively
+panic = "abort"     # Removes heavy stack-unwinding infrastructure code
