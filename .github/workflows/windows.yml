@@ -1,0 +1,53 @@
+name: Windows build
+
+# Builds sudokah.exe on real Windows runners (native x86_64-pc-windows-msvc, the
+# same target we ship), does a best-effort smoke launch, and uploads the exe so
+# it can be downloaded and tested on a real machine.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # Native build on the runner's host target (x86_64-pc-windows-msvc), using
+      # the release profile from Cargo.toml. This is the real-Windows compile/link
+      # test; it produces target/release/sudokah.exe.
+      - name: Build (release)
+        run: cargo build --release
+
+      # Best-effort: launch the GUI exe and confirm it doesn't crash on startup.
+      # Marked continue-on-error because the runners may lack an OpenGL 3.x context
+      # for the glow renderer, which can make windowed startup fail even when the
+      # build is fine. The artifact below is the reliable deliverable.
+      - name: Smoke-launch
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath target\release\sudokah.exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) {
+            Write-Error "sudokah.exe exited early (code $($p.ExitCode))"
+            exit 1
+          }
+          Write-Host "Still running after 8s - startup OK"
+          Stop-Process -Id $p.Id -Force
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: sudokah-windows-x86_64
+          path: target/release/sudokah.exe
+          if-no-files-found: error
