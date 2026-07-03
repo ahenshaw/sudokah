@@ -1,6 +1,6 @@
 [package]
 name = "sudokah"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 
 # The app logic lives in a library so both the desktop binary and the Android
