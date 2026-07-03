@@ -1,11 +1,23 @@
 # Cross-compiling to Windows from Linux.
 #
-#   rustup target add x86_64-pc-windows-gnu   # one-time
-#   sudo apt install gcc-mingw-w64-x86-64     # one-time (provides the linker)
-#   cargo build --release --target x86_64-pc-windows-gnu
+# Preferred: MSVC target via cargo-xwin (native Windows ABI, no mingw runtime
+# DLLs, smaller binary). One-time setup:
+#     rustup target add x86_64-pc-windows-msvc
+#     cargo install cargo-xwin           # needs LLVM: clang, lld-link, llvm-lib
+# Build (cargo-xwin fetches & caches the MS CRT/SDK on first run):
+#     cargo xwin build --release --target x86_64-pc-windows-msvc
+#   -> target/x86_64-pc-windows-msvc/release/sudokah.exe
 #
-# Produces target/x86_64-pc-windows-gnu/release/sudokah.exe. The GNU (mingw)
-# target is used rather than MSVC so no Windows SDK / cargo-xwin is required.
+# Alternative: GNU (mingw) target — no cargo-xwin, but the exe may need
+# libwinpthread-1.dll etc. beside it. One-time setup:
+#     rustup target add x86_64-pc-windows-gnu
+#     sudo apt install gcc-mingw-w64-x86-64
+# Build:
+#     cargo build --release --target x86_64-pc-windows-gnu
+#   -> target/x86_64-pc-windows-gnu/release/sudokah.exe
+#
+# The linker entry below is what makes the GNU build work; the MSVC build sets
+# its own linker through cargo-xwin and needs nothing here.
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
 ar = "x86_64-w64-mingw32-ar"
