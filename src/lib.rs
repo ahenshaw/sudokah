@@ -1,7 +1,10 @@
 use eframe::egui;
 use egui::{
-    pos2, vec2, Align2, Color32, CornerRadius, Event, FontId, Key, Pos2, Rect, Sense, Stroke,
+    pos2, vec2, Align, Align2, Color32, CornerRadius, Event, FontId, Key, Layout, Pos2, Rect,
+    Sense, Stroke, UiBuilder,
 };
+use egui_taffy::taffy;
+use egui_taffy::{tui, TuiBuilderLogic};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -10,6 +13,9 @@ use std::time::{Duration, Instant};
 const STATE_KEY: &str = "sudokah_state";
 /// Storage key for the best solve time (seconds) per difficulty.
 const BEST_TIMES_KEY: &str = "sudokah_best_times";
+/// Storage key for the "Show errors" toggle, persisted independently of any
+/// in-progress puzzle so the preference survives an empty or solved board.
+const SHOW_ERRORS_KEY: &str = "sudokah_show_errors";
 
 /// `MM:SS`, or `H:MM:SS` once the solve passes an hour.
 fn format_duration(d: Duration) -> String {
@@ -56,6 +62,10 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     // Keep the screen on while playing.
     app.set_window_flags(WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
 
+    // Stash the JavaVM + Activity handles (as integers so they're `Send`/`Sync`)
+    // for the system-bar inset query in `raw_input_hook`, before `app` is moved.
+    let _ = ANDROID_PTRS.set((app.vm_as_ptr() as usize, app.activity_as_ptr() as usize));
+
     let options = eframe::NativeOptions {
         android_app: Some(app),
         ..Default::default()
@@ -63,6 +73,55 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     if let Err(e) = run(options) {
         log::error!("sudokah exited with error: {e}");
     }
+}
+
+/// `(JavaVM*, Activity jobject)` as `usize`, stashed by [`android_main`] so
+/// [`android_system_bar_insets`] can reach the Android framework from the UI
+/// thread.
+#[cfg(target_os = "android")]
+static ANDROID_PTRS: std::sync::OnceLock<(usize, usize)> = std::sync::OnceLock::new();
+
+/// System-bar (status + navigation) insets in **physical pixels**, read from the
+/// activity's `WindowInsets` via JNI. Returns `None` on any failure — a missing
+/// inset is harmless (we just don't pad), so nothing here is allowed to panic.
+/// Uses the API 23+ `getSystemWindowInset*` accessors to match `min_sdk 23`.
+#[cfg(target_os = "android")]
+fn android_system_bar_insets() -> Option<egui::epaint::MarginF32> {
+    use jni::objects::JObject;
+
+    let &(vm_ptr, activity_ptr) = ANDROID_PTRS.get()?;
+    let vm = unsafe { jni::JavaVM::from_raw(vm_ptr as *mut jni::sys::JavaVM) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let activity = unsafe { JObject::from_raw(activity_ptr as jni::sys::jobject) };
+
+    let window = env
+        .call_method(&activity, "getWindow", "()Landroid/view/Window;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    let decor = env
+        .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    let insets = env
+        .call_method(&decor, "getRootWindowInsets", "()Landroid/view/WindowInsets;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    if insets.is_null() {
+        return None; // view not attached yet; will succeed on a later frame
+    }
+
+    let mut get = |name: &str| -> Option<f32> {
+        Some(env.call_method(&insets, name, "()I", &[]).ok()?.i().ok()? as f32)
+    };
+    Some(egui::epaint::MarginF32 {
+        left: get("getSystemWindowInsetLeft")?,
+        right: get("getSystemWindowInsetRight")?,
+        top: get("getSystemWindowInsetTop")?,
+        bottom: get("getSystemWindowInsetBottom")?,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +242,11 @@ struct SudokahApp {
     show_best_times: bool,
     /// The title last pushed to the window, so we only resend on change.
     last_title: String,
+    /// Controls' packed natural height (rows + gaps + padding), measured last
+    /// frame. In portrait it sizes the board (the board takes the height the
+    /// controls don't need). Depends only on panel width, so a frame of lag is
+    /// invisible.
+    controls_min: f32,
 }
 
 /// The slice of app state persisted between sessions (an in-progress puzzle).
@@ -193,8 +257,6 @@ struct SaveState {
     baseline: Grid,
     set_givens: bool,
     mode: Mode,
-    #[serde(default)]
-    show_errors: bool,
     /// Difficulty of the in-progress puzzle, if it came from a generator.
     #[serde(default)]
     difficulty: Option<String>,
@@ -233,6 +295,7 @@ impl Default for SudokahApp {
             best_times: HashMap::new(),
             show_best_times: false,
             last_title: String::new(),
+            controls_min: 0.0,
         }
     }
 }
@@ -248,13 +311,15 @@ impl SudokahApp {
         cc.egui_ctx.set_visuals(egui::Visuals::light());
         let mut app = SudokahApp::default();
         if let Some(storage) = cc.storage {
+            app.show_errors = storage
+                .get_string(SHOW_ERRORS_KEY)
+                .is_some_and(|s| s == "true");
             if let Some(json) = storage.get_string(STATE_KEY) {
                 if let Ok(state) = serde_json::from_str::<SaveState>(&json) {
                     app.grid = state.grid;
                     app.baseline = state.baseline;
                     app.set_givens = state.set_givens;
                     app.mode = state.mode;
-                    app.show_errors = state.show_errors;
                     if app.show_errors {
                         app.compute_solution();
                     }
@@ -909,40 +974,142 @@ fn generate_puzzle(target_givens: usize, rng: &mut Rng) -> [[u8; 9]; 9] {
 // ---------------------------------------------------------------------------
 
 impl eframe::App for SudokahApp {
+    /// On Android, feed the system-bar insets into egui's safe area so the whole
+    /// UI (which fills `ctx.content_rect()`) is pushed out from under the status
+    /// and navigation bars. egui insets are in points, so convert from physical
+    /// pixels; a no-op on every other platform.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw_input: &mut egui::RawInput) {
+        #[cfg(target_os = "android")]
+        if let Some(px) = android_system_bar_insets() {
+            let ppp = _ctx.pixels_per_point().max(0.1);
+            _raw_input.safe_area_insets = Some(egui::SafeAreaInsets(egui::epaint::MarginF32 {
+                left: px.left / ppp,
+                right: px.right / ppp,
+                top: px.top / ppp,
+                bottom: px.bottom / ppp,
+            }));
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_keyboard(&ctx);
         self.update_timer(&ctx);
         self.update_title(&ctx);
 
-        // Controls live at the bottom (thumb-friendly for Android), with the
-        // board filling the remaining space above. When the window is clearly
-        // landscape, the board would be squeezed into a short strip, so the
-        // controls move to the right instead. The 1.3 ratio keeps near-square
-        // windows on the bottom layout.
-        let size = ui.available_size();
-        if size.x > size.y * 1.3 {
-            // Pin the width: the keypad sizes its squares from the panel's
-            // available width, so an unpinned panel would grow to fit the
-            // squares and starve the board. exact_size breaks that loop.
-            egui::Panel::right("toolbar")
-                .resizable(false)
-                .exact_size((size.x * 0.42).clamp(320.0, 440.0))
-                .show(ui, |ui| self.toolbar(ui));
+        // The board is the anchor: a square that fills the window width when the
+        // height allows, with the controls taking whatever space is left. The
+        // split is derived analytically from the window size — there is no
+        // draggable divider. When the window is clearly landscape the controls
+        // sit to the right of the board instead of below it (the 1.3 ratio keeps
+        // near-square windows in the portrait layout).
+        const BOTTOM_MARGIN: f32 = 10.0;
+        let full = ui.max_rect();
+        let landscape = full.width() > full.height() * 1.3;
+
+        // `self.controls_min` is the controls' packed natural height (measured
+        // last frame in the taffy block below). It depends only on the panel
+        // width, so the one-frame lag is invisible.
+        let (board_rect, bar_rect) = if landscape {
+            // Controls have no intrinsic width, so pin a reasonable fraction and
+            // give the board the rest (a centred square, `BOTTOM_MARGIN` off the
+            // bottom edge).
+            let controls_w = (full.width() * 0.42).clamp(320.0, 460.0);
+            let x = full.right() - controls_w;
+            (
+                Rect::from_min_max(full.min, pos2(x, full.bottom() - BOTTOM_MARGIN)),
+                Rect::from_min_max(pos2(x, full.top()), full.max),
+            )
         } else {
-            egui::Panel::bottom("toolbar").show(ui, |ui| self.toolbar(ui));
-        }
-        egui::CentralPanel::default().show(ui, |ui| {
-            self.draw_board(ui);
-        });
+            // Full-width square when the height allows; otherwise shrink it (still
+            // square) so the controls keep their natural height. `controls_min`
+            // already includes the bottom margin (its taffy `pad_b`).
+            let board_side = full.width().min((full.height() - self.controls_min).max(1.0));
+            let y = full.top() + board_side;
+            (
+                Rect::from_min_max(full.min, pos2(full.right(), y)),
+                Rect::from_min_max(pos2(full.left(), y), full.max),
+            )
+        };
+
+        // We aren't inside egui panels, so paint the panel background ourselves.
+        // Fill the whole content area (not just the two regions) so the bottom
+        // margin and any gap between board and controls stay the panel colour
+        // rather than showing the bare window clear-colour.
+        ui.painter()
+            .rect_filled(full, CornerRadius::ZERO, ui.visuals().panel_fill);
+
+        // The board renders a centred square into its region (see `draw_board`);
+        // the controls render into their own region, clipped so nothing spills.
+        let mut board_ui =
+            ui.new_child(UiBuilder::new().max_rect(board_rect).layout(Layout::top_down(Align::Min)));
+        board_ui.set_clip_rect(board_rect);
+        self.draw_board(&mut board_ui);
+
+        // Controls: a Taffy flex column whose children are the control rows.
+        // `SpaceEvenly` spreads the spare height into equal gaps around and
+        // between the rows so they fill the region; `align_items: Stretch` gives
+        // every row the panel's full width so the keypad sizes correctly. Summing
+        // the rows' natural heights (+ gaps + padding) gives `controls_min`, used
+        // above to size the board; `pad_b` is the required bottom margin.
+        let gap = 6.0;
+        let (pad_t, pad_b) = (4.0, BOTTOM_MARGIN);
+        let lp = |v: f32| taffy::LengthPercentage::length(v);
+        let mut bar_ui = ui.new_child(
+            UiBuilder::new().max_rect(bar_rect).layout(Layout::top_down(Align::Min)),
+        );
+        bar_ui.set_clip_rect(bar_rect);
+        tui(&mut bar_ui, egui::Id::new("controls"))
+            .reserve_available_space()
+            .style(taffy::Style {
+                flex_direction: taffy::FlexDirection::Column,
+                justify_content: Some(taffy::JustifyContent::SpaceEvenly),
+                align_items: Some(taffy::AlignItems::Stretch),
+                gap: taffy::Size { width: lp(0.0), height: lp(gap) },
+                padding: taffy::Rect { left: lp(0.0), right: lp(0.0), top: lp(pad_t), bottom: lp(pad_b) },
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .show(|t| {
+                let mut sum = 0.0;
+                sum += t.ui(|ui| {
+                    self.row_keypad(ui);
+                    ui.min_rect().height()
+                });
+                sum += t.ui(|ui| {
+                    self.row_modes(ui);
+                    ui.min_rect().height()
+                });
+                sum += t.ui(|ui| {
+                    self.row_actions(ui);
+                    ui.min_rect().height()
+                });
+                sum += t.ui(|ui| {
+                    self.row_flags(ui);
+                    ui.min_rect().height()
+                });
+                sum += t.ui(|ui| {
+                    self.row_difficulty(ui);
+                    ui.min_rect().height()
+                });
+                self.controls_min = sum + gap * 4.0 + pad_t + pad_b;
+            });
+        self.load_dialog(&ctx);
+        self.best_times_dialog(&ctx);
+        self.confirm_dialog(&ctx);
     }
 
     /// Persist an in-progress puzzle; clear storage once it's empty or solved.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        // Best times persist regardless of whether a puzzle is in progress.
+        // Best times and UI preferences persist regardless of whether a puzzle
+        // is in progress.
         if let Ok(json) = serde_json::to_string(&self.best_times) {
             storage.set_string(BEST_TIMES_KEY, json);
         }
+        storage.set_string(SHOW_ERRORS_KEY, self.show_errors.to_string());
         if self.is_completed() || self.is_empty() {
             storage.set_string(STATE_KEY, String::new());
             return;
@@ -952,7 +1119,6 @@ impl eframe::App for SudokahApp {
             baseline: self.baseline,
             set_givens: self.set_givens,
             mode: self.mode,
-            show_errors: self.show_errors,
             difficulty: self.difficulty.clone(),
             elapsed_ms: self.elapsed().as_millis() as u64,
         };
@@ -962,27 +1128,40 @@ impl eframe::App for SudokahApp {
     }
 }
 
+/// Left padding to horizontally center a row whose content is `w` wide within
+/// `avail`. egui places widgets left-to-right before the row width is known, so
+/// centered rows are padded manually.
+fn row_left_pad(avail: f32, w: f32) -> f32 {
+    ((avail - w) * 0.5).max(0.0)
+}
+
+/// Width of `text` laid out in `font`, used to measure a row so it can be centered.
+fn row_text_width(ui: &egui::Ui, text: &str, font: &egui::FontId) -> f32 {
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE)
+        .size()
+        .x
+}
+
 impl SudokahApp {
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        ui.add_space(4.0);
+    /// Keypad row: digits 1-9 plus the delete button.
+    fn row_keypad(&mut self, ui: &mut egui::Ui) {
         let counts = self.digit_counts();
         let done_fill = Color32::from_rgb(120, 190, 130); // a digit fully placed (all 9 on board)
         let spacing = ui.spacing().item_spacing.x;
 
-        // Digit / color pad on a single row: 1-9 plus delete (10 = delete).
-        // The cells are taller than wide so the numerals can be drawn large even
-        // though ten of them have to share the width.
+        // Digit / color pad on a single row: 1-9 plus delete (10 = delete). The
+        // buttons are square and the row fills the width, so each is a tenth of
+        // it (minus the inter-button spacing).
         let ds = ((ui.available_width() - spacing * 9.0) / 10.0).max(1.0);
-        let dh = ds * 1.6;
-        let dsz = vec2(ds, dh);
+        let dsz = vec2(ds, ds);
         ui.horizontal(|ui| {
             for d in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10u8] {
                 if d == 10 {
                     if ui
                         .add_sized(
                             dsz,
-                            egui::Button::new(egui::RichText::new("🗑").size(dh * 0.45)).frame(false),
+                            egui::Button::new(egui::RichText::new("🗑").size(ds * 0.5)).frame(false),
                         )
                         .on_hover_text("Delete (Backspace)")
                         .clicked()
@@ -1001,7 +1180,7 @@ impl SudokahApp {
                     // active mode. A fully-placed digit gets a filled chip (with dark
                     // text for contrast).
                     let done = counts[(d - 1) as usize] == 9;
-                    let mut text = egui::RichText::new(format!("{d}")).size(dh * 0.62);
+                    let mut text = egui::RichText::new(format!("{d}")).size(ds * 0.58);
                     if !done {
                         text = text.color(self.mode.ink());
                     }
@@ -1015,15 +1194,28 @@ impl SudokahApp {
                 }
             }
         });
+    }
 
-        ui.add_space(4.0);
+    /// Mode buttons (2×2) and the cursor D-pad, side by side.
+    fn row_modes(&mut self, ui: &mut egui::Ui) {
+        let spacing = ui.spacing().item_spacing.x;
         // Mode buttons (2x2) share a row with the cursor D-pad. Both blocks are
-        // two squares tall so they line up; sized to fill the width as 5 columns
-        // (2 mode + 3 D-pad). The arrows are painted as triangles rather than text
-        // glyphs because the bundled Android font has no arrow characters (they'd
-        // render as empty "tofu" boxes).
-        let s = ((ui.available_width() - spacing * 4.0) / 5.0).max(1.0);
-        let sz = vec2(s, s);
+        // two buttons tall so they line up; sized as 5 columns (2 mode + 3 D-pad).
+        // The arrows are painted as triangles rather than text glyphs because the
+        // bundled Android font has no arrow characters (they'd render as empty
+        // "tofu" boxes).
+        //
+        // The button width is capped: the block is two buttons tall, so letting
+        // it fill very wide windows would make it tall enough to starve the board.
+        // Past the cap the block keeps its size and is centered instead.
+        const MODE_S_MAX: f32 = 100.0;
+        let avail = ui.available_width();
+        let s = (((avail - spacing * 4.0) / 5.0).max(1.0)).min(MODE_S_MAX);
+        let block_w = s * 5.0 + spacing * 4.0;
+        // Buttons are 2/3 as tall as they are wide, so the two-row block is
+        // tighter vertically (the cursor keys in particular) and the board keeps
+        // more height.
+        let sz = vec2(s, s * 2.0 / 3.0);
         let mut nudge: Option<(i32, i32)> = None;
         // `tri` is U/D/L/R; draws a button-styled square with a triangle and
         // reports a click.
@@ -1067,6 +1259,8 @@ impl SudokahApp {
             resp.clicked()
         };
         ui.horizontal(|ui| {
+            // Center the block when the square size is capped below full width.
+            ui.add_space(row_left_pad(avail, block_w));
             // 2x2 mode buttons.
             ui.vertical(|ui| {
                 for row in [
@@ -1119,36 +1313,20 @@ impl SudokahApp {
         if let Some((dr, dc)) = nudge {
             self.move_cursor(dr, dc, false);
         }
+    }
 
-        // One blank row (a button-row tall) separating the cursor block from the
-        // buttons below.
-        let row_h = ui.spacing().interact_size.y;
-        ui.add_space(row_h);
-        // egui can't center a sequence of widgets on its own (immediate mode
-        // places them left-to-right before the row width is known), so measure
-        // each row's content and pad the left edge to center it.
+    /// Action row: Best times, Clear marks, Solve, New / Clear.
+    fn row_actions(&mut self, ui: &mut egui::Ui) {
         let item = ui.spacing().item_spacing.x;
         let btn_pad = 2.0 * ui.spacing().button_padding.x;
-        let icon_w = ui.spacing().icon_width;
-        let icon_gap = ui.spacing().icon_spacing;
         let body_font = egui::TextStyle::Button.resolve(ui.style());
-        let big_font = egui::FontId::proportional(22.0);
         let avail = ui.available_width();
-        let text_w = |ui: &egui::Ui, t: &str, f: &egui::FontId| -> f32 {
-            ui.painter()
-                .layout_no_wrap(t.to_owned(), f.clone(), Color32::WHITE)
-                .size()
-                .x
-        };
-        let left_pad = |w: f32| ((avail - w) * 0.5).max(0.0);
-
-        // Action row.
         let mut w = 6.0 + item * 4.0; // separator + gaps between the 5 items
         for t in ["🏆 Best times", "Clear marks", "Solve", "New / Clear"] {
-            w += text_w(ui, t, &body_font) + btn_pad;
+            w += row_text_width(ui, t, &body_font) + btn_pad;
         }
         ui.horizontal(|ui| {
-            ui.add_space(left_pad(w));
+            ui.add_space(row_left_pad(avail, w));
             if ui.button("🏆 Best times").clicked() {
                 self.show_best_times = true;
             }
@@ -1171,15 +1349,21 @@ impl SudokahApp {
                 }
             }
         });
+    }
 
-        ui.add_space(4.0);
-        // Flags row (checkboxes).
+    /// Flags row: the three checkboxes.
+    fn row_flags(&mut self, ui: &mut egui::Ui) {
+        let item = ui.spacing().item_spacing.x;
+        let icon_w = ui.spacing().icon_width;
+        let icon_gap = ui.spacing().icon_spacing;
+        let body_font = egui::TextStyle::Button.resolve(ui.style());
+        let avail = ui.available_width();
         let mut w = item * 2.0; // gaps between the 3 checkboxes
         for t in ["Clues", "Set givens", "Show errors"] {
-            w += icon_w + icon_gap + text_w(ui, t, &body_font);
+            w += icon_w + icon_gap + row_text_width(ui, t, &body_font);
         }
         ui.horizontal(|ui| {
-            ui.add_space(left_pad(w));
+            ui.add_space(row_left_pad(avail, w));
             ui.checkbox(&mut self.show_auto_candidates, "Clues")
                 .on_hover_text("Overlay legal candidates without touching your own marks");
             ui.checkbox(&mut self.set_givens, "Set givens");
@@ -1193,15 +1377,20 @@ impl SudokahApp {
                 self.compute_solution();
             }
         });
+    }
 
-        ui.add_space(4.0);
-        // New-puzzle difficulty buttons.
+    /// New-puzzle difficulty buttons (and Load…).
+    fn row_difficulty(&mut self, ui: &mut egui::Ui) {
+        let item = ui.spacing().item_spacing.x;
+        let btn_pad = 2.0 * ui.spacing().button_padding.x;
+        let big_font = egui::FontId::proportional(22.0);
+        let avail = ui.available_width();
         let mut w = item * 4.0; // gaps between the 5 buttons
         for t in ["Easy", "Medium", "Hard", "Expert", "Load..."] {
-            w += text_w(ui, t, &big_font) + btn_pad;
+            w += row_text_width(ui, t, &big_font) + btn_pad;
         }
         ui.horizontal(|ui| {
-            ui.add_space(left_pad(w));
+            ui.add_space(row_left_pad(avail, w));
             for (label, diff) in [
                 ("Easy", "easy"),
                 ("Medium", "medium"),
@@ -1228,13 +1417,6 @@ impl SudokahApp {
                 self.show_load_dialog = true;
             }
         });
-
-        // Lift the whole stack up off the bottom edge.
-        ui.add_space(100.0);
-
-        self.load_dialog(&ctx);
-        self.best_times_dialog(&ctx);
-        self.confirm_dialog(&ctx);
     }
 
     /// Pop-up listing the best solve time for each difficulty, with a button to
@@ -1458,18 +1640,15 @@ impl SudokahApp {
     }
 
     fn draw_board(&mut self, ui: &mut egui::Ui) {
-        let avail = ui.available_size();
-        // Always fill the available width; keep cells as close to square as
-        // possible, squishing them vertically only when there isn't enough
-        // height for a 1.0 aspect ratio.
-        let cw = avail.x.max(200.0) / 9.0;
-        let ch = cw.min((avail.y / 9.0).max(1.0));
-        let cmin = cw.min(ch); // basis for font sizes
-        // Push the board to the bottom of its area so it sits directly above
-        // the controls; the leftover height collects as a margin up top.
-        ui.add_space((avail.y - ch * 9.0).max(0.0));
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(cw * 9.0, ch * 9.0), Sense::click_and_drag());
+        let area = ui.max_rect();
+        // Cells are always square: the board is the largest 9×9 square that fits
+        // the region, centred in it — so it fills the width when width-limited and
+        // simply centres when height-limited.
+        let cw = (area.width().min(area.height()) / 9.0).max(1.0);
+        let ch = cw;
+        let cmin = cw; // basis for font sizes
+        let rect = Rect::from_center_size(area.center(), vec2(cw * 9.0, ch * 9.0));
+        let response = ui.allocate_rect(rect, Sense::click_and_drag());
         let painter = ui.painter_at(rect);
         let origin = rect.min;
 

@@ -16,18 +16,21 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.150"
+# Flexbox layout for the controls panel (Taffy engine). Pins egui to 0.34, which
+# is why eframe below is 0.34 rather than 0.35.
+egui_taffy = "0.12"
 
 # eframe is declared per-target so feature sets don't unify across platforms:
 # the desktop build keeps eframe's defaults (incl. `accesskit`), while Android
 # must omit `accesskit` (it's incompatible with `android-native-activity`).
 [target.'cfg(not(target_os = "android"))'.dependencies]
-eframe = { version = "0.35.0", features = ["persistence"] }
+eframe = { version = "0.34", features = ["persistence"] }
 
 # Android-only: omit defaults, re-enable just the renderer + fonts, and add the
 # native-activity glue, a logger (Android has no stdout), and winit so we can
 # name the `AndroidApp` type in `android_main`.
 [target.'cfg(target_os = "android")'.dependencies]
-eframe = { version = "0.35.0", default-features = false, features = [
+eframe = { version = "0.34", default-features = false, features = [
     "default_fonts",
     "wgpu",
     "persistence",
@@ -36,6 +39,9 @@ eframe = { version = "0.35.0", default-features = false, features = [
 winit = { version = "0.30", default-features = false, features = ["android-native-activity"] }
 android_logger = "0.14"
 log = "0.4"
+# Queries the system-bar insets (status/navigation bars) via the Android
+# framework so we can inset the UI out from under them (edge-to-edge).
+jni = "0.21"
 
 # Default Android manifest config for cargo-apk. Adjust as needed.
 [package.metadata.android]
