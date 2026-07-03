@@ -1,0 +1,54 @@
+name: Android build
+
+# Builds the debug APK (cargo apk build --lib) and uploads it as an artifact.
+# Release signing needs a keystore secret, so this only produces the debug-
+# signed APK (fine for sideload testing, not for the Play Store).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable) + Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Android SDK cmdline-tools
+        uses: android-actions/setup-android@v3
+
+      # target_sdk_version = 35 in Cargo.toml, so that platform must be installed.
+      - name: Install SDK platform & build-tools
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      # cargo-apk finds the NDK via ANDROID_NDK_ROOT; use the one preinstalled on
+      # the runner. If a newer NDK ever breaks linking, pin one instead, e.g.
+      # `sdkmanager "ndk;26.3.11579264"` and point ANDROID_NDK_ROOT at it.
+      - name: Point cargo-apk at the NDK
+        run: echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+
+      - name: Install cargo-apk
+        run: cargo install cargo-apk
+
+      # `--lib` is mandatory: it packages the cdylib (which carries android_main).
+      # Without it, cargo-apk also tries to package the desktop bin and fails
+      # ("Bin is not compatible with Cdylib").
+      - name: Build APK (debug, auto-signed)
+        run: cargo apk build --lib
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sudokah-android-apk
+          path: target/debug/apk/sudokah.apk
+          if-no-files-found: error
