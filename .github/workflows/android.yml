@@ -52,3 +52,71 @@ jobs:
           name: sudokah-android-apk
           path: target/debug/apk/sudokah.apk
           if-no-files-found: error
+
+  # Boots a real (x86_64, KVM-accelerated) Android emulator, installs the app,
+  # launches it, and fails if it isn't running or logcat shows a fatal crash.
+  # The shipped APK is arm64-only, which won't run on the x86_64 emulator, so
+  # this job builds an x86_64 APK just for the test.
+  emulator-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable) + Android x86_64 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Android SDK cmdline-tools
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK platform & build-tools
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Point cargo-apk at the NDK
+        run: echo "ANDROID_NDK_ROOT=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+
+      - name: Install cargo-apk
+        run: cargo install cargo-apk
+
+      # Override the arm64 build_targets with x86_64 so the APK runs on the
+      # emulator below.
+      - name: Build x86_64 APK
+        run: cargo apk build --lib --target x86_64-linux-android
+
+      # The reactivecircus emulator needs hardware acceleration.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Launch emulator & smoke-test the app
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: default
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            adb install -r target/debug/apk/sudokah.apk
+            adb shell monkey -p com.example.sudokah -c android.intent.category.LAUNCHER 1
+            sleep 12
+            adb logcat -d > logcat.txt
+            if grep -q "FATAL EXCEPTION" logcat.txt; then
+              echo "=== fatal crash in logcat ==="
+              grep -A25 "FATAL EXCEPTION" logcat.txt
+              exit 1
+            fi
+            pid=$(adb shell pidof com.example.sudokah | tr -d '\r')
+            if [ -z "$pid" ]; then
+              echo "=== app not running after launch ==="
+              tail -150 logcat.txt
+              exit 1
+            fi
+            echo "App running (pid $pid), no fatal exception - smoke test passed"
