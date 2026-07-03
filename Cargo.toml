@@ -20,6 +20,11 @@ serde_json = "1.0.150"
 # is why eframe below is 0.34 rather than 0.35.
 egui_taffy = "0.12"
 
+# Embeds the Windows application icon (assets/icon.ico) into the .exe via
+# build.rs. No-op on non-Windows targets.
+[build-dependencies]
+embed-resource = "2.5"
+
 # eframe is declared per-target so feature sets don't unify across platforms:
 # the desktop build keeps eframe's defaults (incl. `accesskit`), while Android
 # must omit `accesskit` (it's incompatible with `android-native-activity`).
@@ -47,6 +52,8 @@ jni = "0.21"
 [package.metadata.android]
 package = "com.example.sudokah"
 build_targets = ["aarch64-linux-android"]
+# Launcher-icon density mipmaps (referenced as @mipmap/ic_launcher below).
+resources = "android-res"
 
 [package.metadata.android.sdk]
 min_sdk_version = 23
@@ -54,6 +61,7 @@ target_sdk_version = 35
 
 [package.metadata.android.application]
 label = "Sudokah"
+icon = "@mipmap/ic_launcher"
 
 [profile.release]
 opt-level = "z"     # Optimize for size; "z" scales down aggressively over "s"

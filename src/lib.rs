@@ -46,7 +46,11 @@ pub fn run_desktop() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([760.0, 860.0])
             .with_min_inner_size([560.0, 680.0])
-            .with_title("Sudokah"),
+            .with_title("Sudokah")
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+                    .expect("bundled icon.png should be a valid PNG"),
+            ),
         ..Default::default()
     };
     run(options)
