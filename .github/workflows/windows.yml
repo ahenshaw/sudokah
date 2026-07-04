@@ -72,9 +72,19 @@ jobs:
 
       # Package the already-built release exe into an installer. `--no-build`
       # reuses the binary from the release step above; the .msi lands in
-      # target/wix/ named sudokah-<version>-x86_64.msi.
+      # target/wix/ named sudokah-<version>-x86_64.msi. On failure we echo the
+      # captured candle/light output back as a GitHub error annotation so it's
+      # visible via the public check-runs API (the raw log needs auth).
       - name: Build MSI installer
-        run: cargo wix --no-build --nocapture
+        shell: pwsh
+        run: |
+          $out = cargo wix --no-build --nocapture 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) {
+            $msg = $out -replace "`r","" -replace "`n","%0A"
+            Write-Host "::error title=cargo-wix failed::$msg"
+            exit 1
+          }
 
       - name: Upload MSI
         uses: actions/upload-artifact@v4
