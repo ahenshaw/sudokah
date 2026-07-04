@@ -26,12 +26,23 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
-      # cargo-wix drives the WiX Toolset v3 (candle/light). It isn't guaranteed
-      # to be preinstalled on the runner image, so install it explicitly; the
-      # WiX MSI sets the `WIX` env var (machine scope) that cargo-wix looks for,
-      # which subsequent steps inherit.
+      # cargo-wix drives the WiX Toolset v3 (candle/light). We can't use
+      # `choco install wixtoolset`: that package depends on .NET Framework 3.5,
+      # whose sub-install fails on the runner image. Instead grab the WiX v3.14
+      # binaries zip directly — candle/light run on .NET 4.x (already present),
+      # so the 3.5 bootstrapper check never fires. cargo-wix locates the tools
+      # via the `WIX` env var (it appends `bin`), so extract into a `bin`
+      # subfolder, point `WIX` at its parent, and also add `bin` to PATH.
       - name: Install WiX Toolset v3
-        run: choco install wixtoolset --version=3.14.1 -y --no-progress
+        shell: pwsh
+        run: |
+          $url = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+          $bin = "$env:RUNNER_TEMP\wix\bin"
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\wix.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\wix.zip" -DestinationPath $bin -Force
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          Add-Content -Path $env:GITHUB_ENV  -Value "WIX=$env:RUNNER_TEMP\wix\"
 
       - name: Install cargo-wix
         run: cargo install cargo-wix --locked
