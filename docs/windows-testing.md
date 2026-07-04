@@ -1,13 +1,19 @@
 # Windows manual test checklist
 
-The Windows `.exe` is cross-built from Linux (see `.cargo/config.toml`) and only
-smoke-tested under Wine / CI, so give it a pass on a **real Windows machine**
-before shipping. Grab the binary from the **Windows build** GitHub Actions run
-(Artifacts → `sudokah-windows-x86_64`) or build locally with `cargo win`.
+The Windows build is only smoke-tested under CI, so give it a pass on a **real
+Windows machine** before shipping. Grab the `.msi` installer from the **Windows
+build** GitHub Actions run (Artifacts → `sudokah-windows-x86_64-msi`), or build
+locally with `cargo win` for a bare `.exe`.
+
+## Install
+- [ ] The `.msi` installs without warnings, adds a **Sudokah** Start Menu
+      shortcut, and shows up in Add/Remove Programs with the app icon.
+- [ ] Uninstalling from Add/Remove Programs removes the app and the shortcut.
 
 ## Launch
-- [ ] Double-clicking `sudokah.exe` opens the app with **no console window**
-      behind it (release build sets `windows_subsystem = "windows"`).
+- [ ] Launching from the Start Menu shortcut (or double-clicking the installed
+      `sudokah.exe`) opens the app with **no console window** behind it (release
+      build sets `windows_subsystem = "windows"`).
 - [ ] No missing-DLL error dialog (the MSVC build should be self-contained).
 - [ ] Window title shows `Sudokah` (and `Sudokah — MM:SS` once a puzzle runs).
 

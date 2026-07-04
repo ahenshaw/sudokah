@@ -1,8 +1,9 @@
 name: Windows build
 
-# Builds sudokah.exe on real Windows runners (native x86_64-pc-windows-msvc, the
-# same target we ship), does a best-effort smoke launch, and uploads the exe so
-# it can be downloaded and tested on a real machine.
+# Builds sudokah on real Windows runners (native x86_64-pc-windows-msvc, the
+# same target we ship), does a best-effort smoke launch, then packages the exe
+# into an .msi installer with cargo-wix and uploads it. On a version tag the
+# installer is attached to the matching GitHub Release.
 
 on:
   push:
@@ -25,6 +26,16 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
+      # cargo-wix drives the WiX Toolset v3 (candle/light). It isn't guaranteed
+      # to be preinstalled on the runner image, so install it explicitly; the
+      # WiX MSI sets the `WIX` env var (machine scope) that cargo-wix looks for,
+      # which subsequent steps inherit.
+      - name: Install WiX Toolset v3
+        run: choco install wixtoolset --version=3.14.1 -y --no-progress
+
+      - name: Install cargo-wix
+        run: cargo install cargo-wix --locked
+
       # Native build on the runner's host target (x86_64-pc-windows-msvc), using
       # the release profile from Cargo.toml. This is the real-Windows compile/link
       # test; it produces target/release/sudokah.exe.
@@ -34,7 +45,7 @@ jobs:
       # Best-effort: launch the GUI exe and confirm it doesn't crash on startup.
       # Marked continue-on-error because the runners may lack an OpenGL 3.x context
       # for the glow renderer, which can make windowed startup fail even when the
-      # build is fine. The artifact below is the reliable deliverable.
+      # build is fine. The installer below is the reliable deliverable.
       - name: Smoke-launch
         continue-on-error: true
         shell: pwsh
@@ -48,18 +59,24 @@ jobs:
           Write-Host "Still running after 8s - startup OK"
           Stop-Process -Id $p.Id -Force
 
-      - name: Upload exe
+      # Package the already-built release exe into an installer. `--no-build`
+      # reuses the binary from the release step above; the .msi lands in
+      # target/wix/ named sudokah-<version>-x86_64.msi.
+      - name: Build MSI installer
+        run: cargo wix --no-build --nocapture
+
+      - name: Upload MSI
         uses: actions/upload-artifact@v4
         with:
-          name: sudokah-windows-x86_64
-          path: target/release/sudokah.exe
+          name: sudokah-windows-x86_64-msi
+          path: target/wix/*.msi
           if-no-files-found: error
 
       # On a version tag (e.g. `git tag v0.1.0 && git push --tags`), attach the
-      # exe to the matching GitHub Release (created if it doesn't exist yet).
-      - name: Attach exe to release
+      # installer to the matching GitHub Release (created if it doesn't exist yet).
+      - name: Attach MSI to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/sudokah.exe
+          files: target/wix/*.msi
           fail_on_unmatched_files: true

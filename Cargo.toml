@@ -2,6 +2,8 @@
 name = "sudokah"
 version = "0.1.4"
 edition = "2024"
+description = "Sudokah - a sudoku game"
+authors = ["Andy Henshaw"]
 
 # The app logic lives in a library so both the desktop binary and the Android
 # `cdylib` can share it. `rlib` is for the desktop bin; `cdylib` is what

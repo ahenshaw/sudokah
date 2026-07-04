@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="windows-1252"?>
+
+<!--
+  WiX source for the Sudokah Windows installer (.msi), built by cargo-wix.
+
+  cargo-wix injects the `Version` and `CargoTargetBinDir` preprocessor
+  variables, so the exe path and product version track the build automatically.
+  Unlike cargo-wix's default (CLI-oriented) template this installs a GUI app:
+  it drops the PATH environment component and instead adds a Start Menu
+  shortcut. The UpgradeCode below is fixed so future versions upgrade in place
+  rather than installing side-by-side.
+-->
+
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Product
+        Id="*"
+        Name="Sudokah"
+        UpgradeCode="bc3c4012-adca-4324-9026-9463795bbeb4"
+        Manufacturer="Andy Henshaw"
+        Language="1033"
+        Codepage="1252"
+        Version="$(var.Version)">
+
+        <Package Id="*"
+            Keywords="Installer"
+            Description="Sudokah - a sudoku game"
+            Manufacturer="Andy Henshaw"
+            InstallerVersion="450"
+            Languages="1033"
+            Compressed="yes"
+            InstallScope="perMachine"
+            SummaryCodepage="1252"/>
+
+        <MajorUpgrade
+            Schedule="afterInstallInitialize"
+            DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit."/>
+
+        <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" DiskPrompt="CD-ROM #1"/>
+        <Property Id="DiskPrompt" Value="Sudokah Installation"/>
+
+        <Directory Id="TARGETDIR" Name="SourceDir">
+            <Directory Id="$(var.PlatformProgramFilesFolder)" Name="PFiles">
+                <Directory Id="APPLICATIONFOLDER" Name="Sudokah">
+                    <Component Id="binary0" Guid="*">
+                        <File Id="exe0"
+                            Name="sudokah.exe"
+                            DiskId="1"
+                            Source="$(var.CargoTargetBinDir)\sudokah.exe"
+                            KeyPath="yes"/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <Directory Id="ProgramMenuFolder">
+                <Directory Id="ApplicationProgramsFolder" Name="Sudokah"/>
+            </Directory>
+        </Directory>
+
+        <!-- Start Menu shortcut. The HKMU registry value is the component's
+             KeyPath (a shortcut can't be its own keypath) and is removed on
+             uninstall along with the (now empty) menu folder. -->
+        <DirectoryRef Id="ApplicationProgramsFolder">
+            <Component Id="ApplicationShortcut" Guid="ec2ba1f0-dbc4-4fb5-8c0b-c91d8be38cdb">
+                <Shortcut Id="AppStartMenuShortcut"
+                    Name="Sudokah"
+                    Description="Play Sudokah"
+                    Target="[#exe0]"
+                    WorkingDirectory="APPLICATIONFOLDER"
+                    Icon="ProductICO"/>
+                <RemoveFolder Id="RemoveApplicationProgramsFolder"
+                    Directory="ApplicationProgramsFolder"
+                    On="uninstall"/>
+                <RegistryValue Root="HKMU"
+                    Key="Software\Sudokah"
+                    Name="installed"
+                    Type="integer"
+                    Value="1"
+                    KeyPath="yes"/>
+            </Component>
+        </DirectoryRef>
+
+        <Feature Id="Binaries"
+            Title="Application"
+            Description="Installs the Sudokah application."
+            Level="1"
+            ConfigurableDirectory="APPLICATIONFOLDER"
+            AllowAdvertise="no"
+            Display="expand"
+            Absent="disallow">
+            <ComponentRef Id="binary0"/>
+            <ComponentRef Id="ApplicationShortcut"/>
+        </Feature>
+
+        <SetProperty Id="ARPINSTALLLOCATION" Value="[APPLICATIONFOLDER]" After="CostFinalize"/>
+
+        <!-- Add/Remove Programs icon, reused for the Start Menu shortcut. -->
+        <Icon Id="ProductICO" SourceFile="assets\icon.ico"/>
+        <Property Id="ARPPRODUCTICON" Value="ProductICO"/>
+
+        <Property Id="WIXUI_INSTALLDIR" Value="APPLICATIONFOLDER"/>
+        <WixVariable Id="WixUILicenseRtf" Value="wix\License.rtf"/>
+
+        <UIRef Id="WixUI_Minimal"/>
+    </Product>
+</Wix>
