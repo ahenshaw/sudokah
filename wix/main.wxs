@@ -70,10 +70,15 @@
              keypath that can be either per-user or per-machine"). -->
         <DirectoryRef Id="ApplicationProgramsFolder">
             <Component Id="ApplicationShortcut" Guid="ec2ba1f0-dbc4-4fb5-8c0b-c91d8be38cdb">
+                <!-- Target the exe by its install directory rather than by
+                     file key ([#exe0]): the file lives in a different
+                     component (binary0), and a cross-component file reference
+                     trips ICE69. [APPLICATIONFOLDER]sudokah.exe resolves to the
+                     same path without the cross-component reference. -->
                 <Shortcut Id="AppStartMenuShortcut"
                     Name="Sudokah"
                     Description="Play Sudokah"
-                    Target="[#exe0]"
+                    Target="[APPLICATIONFOLDER]sudokah.exe"
                     WorkingDirectory="APPLICATIONFOLDER"
                     Icon="ProductICO"/>
                 <RemoveFolder Id="RemoveApplicationProgramsFolder"
