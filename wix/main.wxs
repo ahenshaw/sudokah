@@ -62,9 +62,12 @@
             </Directory>
         </Directory>
 
-        <!-- Start Menu shortcut. The HKMU registry value is the component's
+        <!-- Start Menu shortcut. The HKCU registry value is the component's
              KeyPath (a shortcut can't be its own keypath) and is removed on
-             uninstall along with the (now empty) menu folder. -->
+             uninstall along with the (now empty) menu folder. The root must be
+             HKCU, not HKMU: WiX treats the shortcut as per-user data, and an
+             ambiguous HKMU keypath trips ICE57 ("both per-user data and a
+             keypath that can be either per-user or per-machine"). -->
         <DirectoryRef Id="ApplicationProgramsFolder">
             <Component Id="ApplicationShortcut" Guid="ec2ba1f0-dbc4-4fb5-8c0b-c91d8be38cdb">
                 <Shortcut Id="AppStartMenuShortcut"
@@ -76,7 +79,7 @@
                 <RemoveFolder Id="RemoveApplicationProgramsFolder"
                     Directory="ApplicationProgramsFolder"
                     On="uninstall"/>
-                <RegistryValue Root="HKMU"
+                <RegistryValue Root="HKCU"
                     Key="Software\Sudokah"
                     Name="installed"
                     Type="integer"
